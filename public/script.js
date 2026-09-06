@@ -1,4 +1,7 @@
-const socket = io('/');
+const socket = io({
+  transports: ['websocket', 'polling']
+});
+
 const videoGrid = document.getElementById('video-grid');
 const videoWrapper = document.querySelector('.video-grid-wrapper');
 const roomId = window.location.pathname.split('/').pop();
@@ -6,7 +9,7 @@ const roomId = window.location.pathname.split('/').pop();
 const peers = {};
 const peerVideoMap = {};
 const peerAudioMap = {};
-const peerNames = {}; // peerId -> { name, isHost }
+const peerNames = {};
 
 let currentUserName = '';
 let currentUserPhone = '';
@@ -24,9 +27,6 @@ socket.on('duplicate-kicked', (reason) => {
   location.href = '/';
 });
 
-// ============================================
-// 🔐 VERIFY & JOIN
-// ============================================
 async function verifyAndJoin() {
   const nameInput = document.getElementById('user-name-input').value.trim();
   const phoneInput = document.getElementById('user-phone-input').value.trim();
@@ -60,7 +60,8 @@ async function verifyAndJoin() {
       document.getElementById('room-display').innerText = data.title || 'Meeting';
 
       if (isHost) {
-        document.getElementById('screen-btn').style.display = 'flex';
+        const sb = document.getElementById('screen-btn');
+        if (sb) sb.style.display = 'flex';
       }
 
       startMeetingStream();
@@ -71,6 +72,7 @@ async function verifyAndJoin() {
       verifyBtn.disabled = false;
     }
   } catch (e) {
+    console.error(e);
     errorBadge.innerText = 'Server connect হয়নি!';
     errorBadge.style.display = 'block';
     verifyBtn.innerHTML = 'Join Meeting';
@@ -87,10 +89,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-// ============================================
-// 🎥 MEDIA FALLBACK
-// ============================================
 async function getMediaStreamWithFallback() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return null;
   try { return await navigator.mediaDevices.getUserMedia({ video: true, audio: true }); } catch (e) {}
   try { return await navigator.mediaDevices.getUserMedia({ video: false, audio: true }); } catch (e) {}
   try { return await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); } catch (e) {}
@@ -98,36 +98,63 @@ async function getMediaStreamWithFallback() {
 }
 
 function hasLiveVideo(stream) {
-  return !!(stream && stream.getVideoTracks().some(t => t.readyState === 'live' && t.enabled !== false));
+  return !!(stream && stream.getVideoTracks().some(t => t.readyState === 'live'));
 }
-
 function hasLiveAudio(stream) {
   return !!(stream && stream.getAudioTracks().some(t => t.readyState === 'live'));
 }
 
-// ============================================
-// 🌐 START MEETING
-// ============================================
-async function startMeetingStream() {
-  myPeer = new Peer(undefined, {
+function createPeer() {
+  const isSecure = location.protocol === 'https:';
+  const port = isSecure ? 443 : (location.port ? Number(location.port) : 3000);
+
+  return new Peer(undefined, {
     path: '/peerjs',
-    host: '/',
-    port: location.port || 3000,
-    secure: location.protocol === 'https:'
+    host: location.hostname,
+    port: port,
+    secure: isSecure,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
+      ]
+    },
+    debug: 1
   });
+}
+
+async function startMeetingStream() {
+  cameraStream = await getMediaStreamWithFallback();
+  outgoingStream = cameraStream;
+
+  myPeer = createPeer();
 
   myPeer.on('open', (id) => {
+    console.log('✅ Peer connected:', id);
     myPeerId = id;
     peerNames[myPeerId] = { name: currentUserName, isHost };
     socket.emit('join-room', roomId, id, currentUserName, currentUserPhone, isHost);
     renderOwnCard();
   });
 
-  myPeer.on('error', (err) => console.warn('Peer error:', err));
+  myPeer.on('error', (err) => {
+    console.error('Peer error:', err);
+    if (!myPeerId) {
+      myPeerId = 'local-' + Date.now();
+      peerNames[myPeerId] = { name: currentUserName, isHost };
+      renderOwnCard();
+    }
+  });
 
-  cameraStream = await getMediaStreamWithFallback();
-  outgoingStream = cameraStream;
-  renderOwnCard();
+  // Show own card fast even before peer connects
+  setTimeout(() => {
+    if (!myPeerId) {
+      myPeerId = 'local-temp';
+      peerNames[myPeerId] = { name: currentUserName, isHost };
+    }
+    renderOwnCard();
+  }, 300);
 
   myPeer.on('call', (call) => {
     call.answer(outgoingStream || new MediaStream());
@@ -137,15 +164,16 @@ async function startMeetingStream() {
   socket.on('user-connected', (userId, userName, userIsHost) => {
     peerNames[userId] = { name: userName, isHost: !!userIsHost };
     setTimeout(() => {
-      const call = myPeer.call(userId, outgoingStream || new MediaStream());
-      bindCallEvents(call, userId);
-    }, 1000);
+      if (!myPeer) return;
+      try {
+        const call = myPeer.call(userId, outgoingStream || new MediaStream());
+        bindCallEvents(call, userId);
+      } catch (e) { console.warn(e); }
+    }, 1200);
   });
 
   socket.on('user-disconnected', (userId) => {
-    if (userId === currentPresenterPeerId) {
-      setPresentationStageMode(null, false);
-    }
+    if (userId === currentPresenterPeerId) setPresentationStageMode(null, false);
     closePeer(userId);
     delete peerNames[userId];
   });
@@ -162,7 +190,8 @@ async function startMeetingStream() {
     const banner = document.getElementById('screen-share-banner');
     if (active) {
       if (banner) banner.style.display = 'flex';
-      document.getElementById('screen-share-text').innerText = `${hostName} is presenting`;
+      const t = document.getElementById('screen-share-text');
+      if (t) t.innerText = `${hostName} is presenting`;
       setPresentationStageMode(hostPeerId, true);
     } else {
       if (banner) banner.style.display = 'none';
@@ -180,10 +209,8 @@ function closePeer(peerId) {
   removeAudioByPeer(peerId);
 }
 
-// ============================================
-// CALL EVENTS
-// ============================================
 function bindCallEvents(call, peerId) {
+  if (!call || !peerId) return;
   if (peers[peerId] && peers[peerId] !== call) {
     try { peers[peerId].close(); } catch (e) {}
   }
@@ -213,34 +240,22 @@ function bindCallEvents(call, peerId) {
   });
 }
 
-// ============================================
-// PRESENTATION STAGE MODE
-// ============================================
 function setPresentationStageMode(presenterPeerId, isPresenting) {
   currentPresenterPeerId = isPresenting ? presenterPeerId : null;
+  if (!videoWrapper) return;
 
-  if (isPresenting) {
-    videoWrapper.classList.add('presenting-mode');
-  } else {
-    videoWrapper.classList.remove('presenting-mode');
-  }
+  if (isPresenting) videoWrapper.classList.add('presenting-mode');
+  else videoWrapper.classList.remove('presenting-mode');
 
   document.querySelectorAll('.video-card').forEach(card => {
     const pid = card.dataset.peerId;
-    if (isPresenting && pid === presenterPeerId) {
-      card.classList.add('presenting-card');
-    } else {
-      card.classList.remove('presenting-card');
-    }
+    if (isPresenting && pid === presenterPeerId) card.classList.add('presenting-card');
+    else card.classList.remove('presenting-card');
   });
 }
 
-// ============================================
-// 🖼️ UI CARDS (Name Tag Fix & Fullscreen Btn)
-// ============================================
 function ownLabel() {
-  const name = currentUserName || 'User';
-  return name + (isHost ? ' (Host)' : ' (You)');
+  return (currentUserName || 'User') + (isHost ? ' (Host)' : ' (You)');
 }
 
 function getBadgeHTML(title) {
@@ -253,8 +268,7 @@ function getBadgeHTML(title) {
 }
 
 function renderOwnCard() {
-  if (!myPeerId) return;
-
+  if (!myPeerId) myPeerId = 'local-temp';
   if (hasLiveVideo(outgoingStream)) {
     upsertVideoCard(myPeerId, outgoingStream, ownLabel(), true, screenSharing);
   } else {
@@ -264,10 +278,10 @@ function renderOwnCard() {
 }
 
 function upsertVideoCard(peerId, stream, title, isLocal, isScreenShare) {
+  if (!videoGrid) return;
+
   const old = videoGrid.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
-  if (old && old.classList.contains('placeholder-card')) {
-    old.remove();
-  }
+  if (old && old.classList.contains('placeholder-card')) old.remove();
 
   let card = videoGrid.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
   let video = peerVideoMap[peerId];
@@ -294,28 +308,22 @@ function upsertVideoCard(peerId, stream, title, isLocal, isScreenShare) {
     peerVideoMap[peerId] = video;
   }
 
-  if (currentPresenterPeerId && peerId === currentPresenterPeerId) {
-    card.classList.add('presenting-card');
-  } else {
-    card.classList.remove('presenting-card');
-  }
+  if (currentPresenterPeerId && peerId === currentPresenterPeerId) card.classList.add('presenting-card');
+  else card.classList.remove('presenting-card');
 
-  if (isLocal && !isScreenShare) {
-    video.style.transform = 'scaleX(-1)';
-  } else {
-    video.style.transform = 'scaleX(1)';
-  }
+  if (isLocal && !isScreenShare) video.style.transform = 'scaleX(-1)';
+  else video.style.transform = 'scaleX(1)';
 
-  if (video.srcObject !== stream) {
-    video.srcObject = stream;
-  }
-  video.play().catch(() => {});
+  if (video && video.srcObject !== stream) video.srcObject = stream;
+  if (video) video.play().catch(() => {});
 
   const badge = card.querySelector('.user-badge');
   if (badge) badge.innerHTML = getBadgeHTML(title);
 }
 
 function upsertPlaceholder(peerId, title) {
+  if (!videoGrid) return;
+
   const existing = videoGrid.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
   if (existing && !existing.classList.contains('placeholder-card')) {
     existing.remove();
@@ -340,6 +348,7 @@ function upsertPlaceholder(peerId, title) {
 }
 
 function removeVideoByPeer(peerId) {
+  if (!videoGrid) return;
   const card = videoGrid.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
   if (card) card.remove();
   if (peerVideoMap[peerId]) {
@@ -373,34 +382,25 @@ function refreshAllBadges() {
   document.querySelectorAll('.video-card').forEach(card => {
     const pid = card.dataset.peerId;
     if (!pid) return;
-    
     let title = '';
-    if (pid === myPeerId) {
-      title = ownLabel();
-    } else {
+    if (pid === myPeerId) title = ownLabel();
+    else {
       const info = peerNames[pid] || { name: 'Participant', isHost: false };
       title = info.name + (info.isHost ? ' (Host)' : '');
     }
-
     const badge = card.querySelector('.user-badge');
     if (badge) badge.innerHTML = getBadgeHTML(title);
   });
 }
 
-// 🛈 Native Full Screen Toggle Function
 function toggleCardFullscreen(btn) {
   const card = btn.closest('.video-card');
   if (!document.fullscreenElement) {
-    if (card.requestFullscreen) {
-      card.requestFullscreen();
-    } else if (card.webkitRequestFullscreen) {
-      card.webkitRequestFullscreen();
-    }
+    if (card.requestFullscreen) card.requestFullscreen();
+    else if (card.webkitRequestFullscreen) card.webkitRequestFullscreen();
     btn.innerHTML = '<i class="fas fa-compress"></i>';
   } else {
-    if (document.exitFullscreen) {
-      document.exitFullscreen();
-    }
+    if (document.exitFullscreen) document.exitFullscreen();
     btn.innerHTML = '<i class="fas fa-expand"></i>';
   }
 }
@@ -413,9 +413,6 @@ document.addEventListener('fullscreenchange', () => {
   }
 });
 
-// ============================================
-// PEOPLE PANEL
-// ============================================
 function updateParticipantsUI(list) {
   const count = list.length || 1;
   const pc = document.getElementById('p-count');
@@ -437,14 +434,8 @@ function updateParticipantsUI(list) {
   });
 }
 
-// ============================================
-// CONTROLS
-// ============================================
 function muteUnmute() {
-  if (!cameraStream || !cameraStream.getAudioTracks()[0]) {
-    alert('মাইক নেই!');
-    return;
-  }
+  if (!cameraStream || !cameraStream.getAudioTracks()[0]) return alert('মাইক নেই!');
   const t = cameraStream.getAudioTracks()[0];
   t.enabled = !t.enabled;
   const btn = document.getElementById('mic-btn');
@@ -453,47 +444,32 @@ function muteUnmute() {
 }
 
 function playStopVideo() {
-  if (!cameraStream || !cameraStream.getVideoTracks()[0]) {
-    alert('ক্যামেরা নেই!');
-    return;
-  }
+  if (!cameraStream || !cameraStream.getVideoTracks()[0]) return alert('ক্যামেরা নেই!');
   const t = cameraStream.getVideoTracks()[0];
   t.enabled = !t.enabled;
   const btn = document.getElementById('video-btn');
   btn.classList.toggle('off-state', !t.enabled);
   btn.innerHTML = t.enabled ? '<i class="fas fa-video"></i>' : '<i class="fas fa-video-slash"></i>';
-
   if (!screenSharing) {
     outgoingStream = cameraStream;
     renderOwnCard();
   }
 }
 
-// ============================================
-// 🖥️ SCREEN SHARE LOGIC
-// ============================================
 async function shareScreen() {
-  if (!isHost) {
-    alert('শুধু Host screen share করতে পারে!');
-    return;
-  }
-  if (screenSharing) {
-    await stopScreenShare();
-    return;
-  }
+  if (!isHost) return alert('শুধু Host screen share করতে পারে!');
+  if (screenSharing) return stopScreenShare();
 
   try {
     activeScreenStream = await navigator.mediaDevices.getDisplayMedia({
       video: { cursor: 'always' },
       audio: false
     });
-
     const screenTrack = activeScreenStream.getVideoTracks()[0];
     if (!screenTrack) return;
 
     screenSharing = true;
     updateScreenBtnUI(true);
-    
     socket.emit('screen-share-started');
 
     const tracks = [screenTrack];
@@ -503,14 +479,10 @@ async function shareScreen() {
 
     setPresentationStageMode(myPeerId, true);
     renderOwnCard();
-
     await recallAllPeers(outgoingStream);
 
-    screenTrack.onended = () => {
-      stopScreenShare();
-    };
+    screenTrack.onended = () => stopScreenShare();
   } catch (err) {
-    console.log('Screen share cancelled', err);
     screenSharing = false;
     updateScreenBtnUI(false);
   }
@@ -520,24 +492,17 @@ async function stopScreenShare() {
   const wasSharing = screenSharing;
   screenSharing = false;
   updateScreenBtnUI(false);
-
   if (wasSharing) {
     try { socket.emit('screen-share-stopped'); } catch (e) {}
   }
-
   if (activeScreenStream) {
-    activeScreenStream.getTracks().forEach(t => {
-      try { t.stop(); } catch (e) {}
-    });
+    activeScreenStream.getTracks().forEach(t => { try { t.stop(); } catch (e) {} });
     activeScreenStream = null;
   }
-
   outgoingStream = cameraStream || null;
-
   setPresentationStageMode(null, false);
   removeVideoByPeer(myPeerId);
   renderOwnCard();
-
   await recallAllPeers(outgoingStream || new MediaStream());
 }
 
@@ -549,6 +514,7 @@ function updateScreenBtnUI(active) {
 }
 
 async function recallAllPeers(stream) {
+  if (!myPeer) return;
   const ids = Object.keys(peers);
   for (const pid of ids) {
     try {
@@ -558,15 +524,10 @@ async function recallAllPeers(stream) {
       }
       const call = myPeer.call(pid, stream || new MediaStream());
       bindCallEvents(call, pid);
-    } catch (e) {
-      console.warn('recall failed', pid, e);
-    }
+    } catch (e) { console.warn(e); }
   }
 }
 
-// ============================================
-// LEAVE & CHAT
-// ============================================
 function leaveMeeting() {
   if (!confirm('Leave meeting?')) return;
   try {
