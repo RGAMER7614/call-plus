@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meeting - Pulse</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+</head>
+<body class="room-body">
+
+  <div id="auth-modal" class="auth-overlay">
+    <div class="auth-card glass-panel">
+      <div class="auth-icon"><i class="fas fa-user-shield"></i></div>
+      <h3>Security Verification</h3>
+      <div id="auth-error" class="error-badge" style="display:none;"></div>
+      <div class="input-group-custom"><label>Your Name</label><input type="text" id="user-name-input"></div>
+      <div class="input-group-custom"><label>Mobile Number</label><input type="tel" id="user-phone-input"></div>
+      <button onclick="verifyAndJoin()" id="verify-btn" class="btn-glow" style="width:100%;justify-content:center;">Join Meeting</button>
+    </div>
+  </div>
+
+  <div class="room-layout" id="meeting-stage" style="display:none;">
+    <div class="stage-container">
+      <header class="top-floating-bar glass-panel">
+        <div class="room-info"><span class="live-dot"></span><span class="room-id" id="room-display">Meeting</span></div>
+        <div class="call-timer" id="meeting-time">00:00</div>
+        <div class="participant-count"><i class="fas fa-users"></i> <span id="p-count">1</span></div>
+        <button class="btn-copy-invite" onclick="copyMeetingLink()"><i class="fas fa-link"></i> Invite</button>
+        <button class="btn-copy-invite" onclick="togglePeople()"><i class="fas fa-user-friends"></i> People</button>
+      </header>
+
+      <div id="screen-share-banner" class="screen-banner" style="display:none;"><i class="fas fa-desktop"></i> <span id="screen-share-text"></span></div>
+
+      <div class="video-grid-wrapper"><div id="video-grid" class="modern-grid"></div></div>
+
+      <div class="floating-dock glass-panel">
+        <button class="dock-btn" id="mic-btn" onclick="muteUnmute()"><i class="fas fa-microphone"></i></button>
+        <button class="dock-btn" id="video-btn" onclick="playStopVideo()"><i class="fas fa-video"></i></button>
+        <button class="dock-btn" id="screen-btn" onclick="shareScreen()" style="display:none;"><i class="fas fa-desktop"></i></button>
+        <button class="dock-btn btn-danger" onclick="leaveMeeting()"><i class="fas fa-phone-slash"></i></button>
+        <div class="dock-divider"></div>
+        <button class="dock-btn" onclick="toggleChat()"><i class="fas fa-comments"></i></button>
+      </div>
+    </div>
+
+    <!-- People Panel -->
+    <aside class="chat-drawer glass-panel" id="people-window" style="display:none;">
+      <div class="chat-drawer-header"><h4>People (<span id="people-count-label">0</span>)</h4><button class="btn-icon" onclick="togglePeople()"><i class="fas fa-times"></i></button></div>
+      <div class="chat-logs" id="people-list"></div>
+    </aside>
+
+    <!-- Chat Panel -->
+    <aside class="chat-drawer glass-panel" id="chat-window">
+      <div class="chat-drawer-header"><h4>Room Chat</h4><button class="btn-icon" onclick="toggleChat()"><i class="fas fa-times"></i></button></div>
+      <div class="chat-logs" id="chat-messages"></div>
+      <div class="chat-sender-box"><input type="text" id="chat-message-input" onkeydown="handleChatKey(event)"><button onclick="sendMessage()" class="btn-send"><i class="fas fa-paper-plane"></i></button></div>
+    </aside>
+  </div>
+
+  <script src="/script.js"></script>
+</body>
+</html>
