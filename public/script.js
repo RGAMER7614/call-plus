@@ -1,5 +1,6 @@
 const socket = io({
-  transports: ['websocket', 'polling']
+  transports: ['websocket', 'polling'],
+  reconnection: true
 });
 
 const videoGrid = document.getElementById('video-grid');
@@ -21,15 +22,21 @@ let myPeer = null;
 let myPeerId = null;
 let screenSharing = false;
 let currentPresenterPeerId = null;
-let hasJoinedRoom = false; // prevent double join
+let hasJoinedRoom = false;
 
 socket.on('duplicate-kicked', (reason) => {
-  alert(reason);
+  alert(reason || 'Duplicate number session ended.');
+  cleanupMedia();
+  location.href = '/';
+});
+
+socket.on('join-rejected', (msg) => {
+  alert(msg || 'Join rejected');
   location.href = '/';
 });
 
 // ============================================
-// VERIFY
+// VERIFY (blocks if number already in room)
 // ============================================
 async function verifyAndJoin() {
   const nameInput = document.getElementById('user-name-input').value.trim();
@@ -56,7 +63,7 @@ async function verifyAndJoin() {
 
     if (res.ok && data.success) {
       currentUserName = nameInput;
-      currentUserPhone = phoneInput;
+      currentUserPhone = phoneInput.replace(/[^0-9]/g, '');
       isHost = !!data.isHost;
 
       document.getElementById('auth-modal').style.display = 'none';
@@ -130,12 +137,20 @@ function createPeer() {
   });
 }
 
+function cleanupMedia() {
+  try {
+    if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
+    if (activeScreenStream) activeScreenStream.getTracks().forEach(t => t.stop());
+    if (myPeer) myPeer.destroy();
+  } catch (e) {}
+}
+
 // ============================================
-// START (NO DOUBLE CARD)
+// START
 // ============================================
 async function startMeetingStream() {
-  // clear grid once
   if (videoGrid) videoGrid.innerHTML = '';
+  hasJoinedRoom = false;
 
   cameraStream = await getMediaStreamWithFallback();
   outgoingStream = cameraStream;
@@ -144,55 +159,44 @@ async function startMeetingStream() {
 
   myPeer.on('open', (id) => {
     console.log('✅ Peer open:', id);
-
-    // remove any temp card
-    if (myPeerId && myPeerId !== id) {
-      removeVideoByPeer(myPeerId);
-      delete peerNames[myPeerId];
-    }
-
     myPeerId = id;
-    peerNames[myPeerId] = { name: currentUserName, isHost };
+    peerNames[id] = { name: currentUserName, isHost };
 
-    // ONLY ONE own card
+    // only ONE own card
     renderOwnCard();
 
-    // join room only once
     if (!hasJoinedRoom) {
       hasJoinedRoom = true;
       socket.emit('join-room', roomId, id, currentUserName, currentUserPhone, isHost);
     }
   });
 
-  myPeer.on('error', (err) => {
-    console.error('Peer error:', err);
-  });
+  myPeer.on('error', (err) => console.error('Peer error:', err));
 
-  // answer calls from others
+  // someone calls me
   myPeer.on('call', (call) => {
-    console.log('📞 Incoming call from', call.peer);
+    if (!call || !call.peer || call.peer === myPeerId) return;
+    console.log('📞 Incoming call:', call.peer);
     call.answer(outgoingStream || new MediaStream());
     bindCallEvents(call, call.peer);
   });
 
-  // when someone else joins -> call them once
+  // NEW: people already in room → I call them
+  socket.on('existing-users', (list) => {
+    console.log('📋 Existing users:', list);
+    (list || []).forEach((u) => {
+      if (!u.peerId || u.peerId === myPeerId) return;
+      peerNames[u.peerId] = { name: u.name, isHost: !!u.isHost };
+      connectToUser(u.peerId);
+    });
+  });
+
+  // someone new joined → I call them
   socket.on('user-connected', (userId, userName, userIsHost) => {
     if (!userId || userId === myPeerId) return;
-    if (peers[userId]) return; // already connected
-
     peerNames[userId] = { name: userName, isHost: !!userIsHost };
-    console.log('👤 User connected:', userName, userId);
-
-    setTimeout(() => {
-      if (!myPeer || !myPeerId) return;
-      if (peers[userId]) return;
-      try {
-        const call = myPeer.call(userId, outgoingStream || new MediaStream());
-        bindCallEvents(call, userId);
-      } catch (e) {
-        console.warn('call failed', e);
-      }
-    }, 800);
+    console.log('👤 New user:', userName, userId);
+    setTimeout(() => connectToUser(userId), 500);
   });
 
   socket.on('user-disconnected', (userId) => {
@@ -223,6 +227,20 @@ async function startMeetingStream() {
   });
 }
 
+function connectToUser(userId) {
+  if (!myPeer || !myPeerId) return;
+  if (!userId || userId === myPeerId) return;
+  if (peers[userId]) return; // already connected
+
+  try {
+    console.log('📤 Calling', userId);
+    const call = myPeer.call(userId, outgoingStream || new MediaStream());
+    if (call) bindCallEvents(call, userId);
+  } catch (e) {
+    console.warn('connectToUser failed', e);
+  }
+}
+
 function closePeer(peerId) {
   if (peers[peerId]) {
     try { peers[peerId].close(); } catch (e) {}
@@ -233,8 +251,7 @@ function closePeer(peerId) {
 }
 
 function bindCallEvents(call, peerId) {
-  if (!call || !peerId) return;
-  if (peerId === myPeerId) return; // never show self as remote
+  if (!call || !peerId || peerId === myPeerId) return;
 
   if (peers[peerId] && peers[peerId] !== call) {
     try { peers[peerId].close(); } catch (e) {}
@@ -251,7 +268,6 @@ function bindCallEvents(call, peerId) {
       upsertVideoCard(peerId, remoteStream, label, false, false);
       removeAudioByPeer(peerId);
     } else {
-      // no camera -> avatar + audio
       upsertPlaceholder(peerId, label);
       if (hasLiveAudio(remoteStream)) playHiddenAudio(peerId, remoteStream);
       else removeAudioByPeer(peerId);
@@ -270,7 +286,6 @@ function bindCallEvents(call, peerId) {
 function setPresentationStageMode(presenterPeerId, isPresenting) {
   currentPresenterPeerId = isPresenting ? presenterPeerId : null;
   if (!videoWrapper) return;
-
   if (isPresenting) videoWrapper.classList.add('presenting-mode');
   else videoWrapper.classList.remove('presenting-mode');
 
@@ -282,7 +297,7 @@ function setPresentationStageMode(presenterPeerId, isPresenting) {
 }
 
 // ============================================
-// CARDS — only ONE card per peerId
+// CARDS
 // ============================================
 function ownLabel() {
   return (currentUserName || 'User') + (isHost ? ' (Host)' : ' (You)');
@@ -298,10 +313,22 @@ function getBadgeHTML(title) {
 }
 
 function renderOwnCard() {
-  if (!myPeerId) return;
+  if (!myPeerId || !videoGrid) return;
 
-  // remove ALL own duplicates first
-  cleanupDuplicateOwnCards();
+  // remove every card that is NOT a known remote peer and NOT me
+  // ensure single own card
+  const cards = [...videoGrid.querySelectorAll('.video-card')];
+  let ownFound = false;
+  cards.forEach(c => {
+    const pid = c.dataset.peerId;
+    if (pid === myPeerId) {
+      if (ownFound) c.remove();
+      else ownFound = true;
+    } else if (pid && (pid.startsWith('local-'))) {
+      c.remove();
+      delete peerVideoMap[pid];
+    }
+  });
 
   if (hasLiveVideo(outgoingStream)) {
     upsertVideoCard(myPeerId, outgoingStream, ownLabel(), true, screenSharing);
@@ -310,44 +337,9 @@ function renderOwnCard() {
   }
 }
 
-function cleanupDuplicateOwnCards() {
-  if (!videoGrid || !myPeerId) return;
-  const cards = [...videoGrid.querySelectorAll('.video-card')];
-  let foundOwn = false;
-
-  cards.forEach(card => {
-    const pid = card.dataset.peerId;
-    const badge = card.querySelector('.badge-title, .user-badge');
-    const text = badge ? badge.innerText : '';
-
-    // remove temp ids
-    if (pid && (pid.startsWith('local-') || pid === 'local-temp') && pid !== myPeerId) {
-      card.remove();
-      delete peerVideoMap[pid];
-      return;
-    }
-
-    // keep only one card for myPeerId
-    if (pid === myPeerId) {
-      if (foundOwn) {
-        card.remove();
-        return;
-      }
-      foundOwn = true;
-    }
-
-    // if badge says (You) but wrong peer id, remove
-    if (text.includes('(You)') && pid !== myPeerId) {
-      card.remove();
-      if (pid) delete peerVideoMap[pid];
-    }
-  });
-}
-
 function upsertVideoCard(peerId, stream, title, isLocal, isScreenShare) {
   if (!videoGrid || !peerId) return;
 
-  // if placeholder exists for same id, replace
   const old = videoGrid.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
   if (old && old.classList.contains('placeholder-card')) {
     old.remove();
@@ -379,17 +371,15 @@ function upsertVideoCard(peerId, stream, title, isLocal, isScreenShare) {
     peerVideoMap[peerId] = video;
   }
 
-  if (currentPresenterPeerId && peerId === currentPresenterPeerId) {
-    card.classList.add('presenting-card');
-  } else {
-    card.classList.remove('presenting-card');
+  if (currentPresenterPeerId && peerId === currentPresenterPeerId) card.classList.add('presenting-card');
+  else card.classList.remove('presenting-card');
+
+  if (video) {
+    if (isLocal && !isScreenShare) video.style.transform = 'scaleX(-1)';
+    else video.style.transform = 'scaleX(1)';
+    if (video.srcObject !== stream) video.srcObject = stream;
+    video.play().catch(() => {});
   }
-
-  if (isLocal && !isScreenShare) video.style.transform = 'scaleX(-1)';
-  else video.style.transform = 'scaleX(1)';
-
-  if (video && video.srcObject !== stream) video.srcObject = stream;
-  if (video) video.play().catch(() => {});
 
   const badge = card.querySelector('.user-badge');
   if (badge) badge.innerHTML = getBadgeHTML(title);
@@ -398,15 +388,12 @@ function upsertVideoCard(peerId, stream, title, isLocal, isScreenShare) {
 function upsertPlaceholder(peerId, title) {
   if (!videoGrid || !peerId) return;
 
-  // if video card already exists for this peer, don't add placeholder
   const existing = videoGrid.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
   if (existing && !existing.classList.contains('placeholder-card')) {
-    // already has video — just update badge
     const badge = existing.querySelector('.user-badge');
     if (badge) badge.innerHTML = getBadgeHTML(title);
     return;
   }
-
   if (existing && existing.classList.contains('placeholder-card')) {
     const badge = existing.querySelector('.user-badge');
     if (badge) badge.innerHTML = getBadgeHTML(title);
@@ -458,12 +445,9 @@ function refreshAllBadges() {
   document.querySelectorAll('.video-card').forEach(card => {
     const pid = card.dataset.peerId;
     if (!pid) return;
-    let title = '';
-    if (pid === myPeerId) title = ownLabel();
-    else {
-      const info = peerNames[pid] || { name: 'Participant', isHost: false };
-      title = info.name + (info.isHost ? ' (Host)' : '');
-    }
+    let title = pid === myPeerId
+      ? ownLabel()
+      : ((peerNames[pid]?.name || 'Participant') + (peerNames[pid]?.isHost ? ' (Host)' : ''));
     const badge = card.querySelector('.user-badge');
     if (badge) badge.innerHTML = getBadgeHTML(title);
   });
@@ -559,7 +543,6 @@ async function shareScreen() {
     setPresentationStageMode(myPeerId, true);
     renderOwnCard();
     await recallAllPeers(outgoingStream);
-
     screenTrack.onended = () => stopScreenShare();
   } catch (err) {
     screenSharing = false;
@@ -593,9 +576,8 @@ function updateScreenBtnUI(active) {
 
 async function recallAllPeers(stream) {
   if (!myPeer) return;
-  const ids = Object.keys(peers);
-  for (const pid of ids) {
-    if (pid === myPeerId) continue;
+  Object.keys(peers).forEach((pid) => {
+    if (pid === myPeerId) return;
     try {
       if (peers[pid]) {
         try { peers[pid].close(); } catch (e) {}
@@ -603,17 +585,13 @@ async function recallAllPeers(stream) {
       }
       const call = myPeer.call(pid, stream || new MediaStream());
       bindCallEvents(call, pid);
-    } catch (e) { console.warn(e); }
-  }
+    } catch (e) {}
+  });
 }
 
 function leaveMeeting() {
   if (!confirm('Leave meeting?')) return;
-  try {
-    if (cameraStream) cameraStream.getTracks().forEach(t => t.stop());
-    if (activeScreenStream) activeScreenStream.getTracks().forEach(t => t.stop());
-    if (myPeer) myPeer.destroy();
-  } catch (e) {}
+  cleanupMedia();
   location.href = '/';
 }
 
