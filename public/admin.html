@@ -8,40 +8,72 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body class="landing-body">
-  <div class="bg-glow glow-1"></div><div class="bg-glow glow-2"></div>
+  <div class="bg-glow glow-1"></div>
+  <div class="bg-glow glow-2"></div>
+
   <nav class="glass-nav">
-    <div class="logo"><div class="logo-icon"><i class="fas fa-shield-alt"></i></div><span>Admin<b>Shield</b></span></div>
+    <div class="logo">
+      <div class="logo-icon"><i class="fas fa-shield-alt"></i></div>
+      <span>Admin<b>Shield</b></span>
+    </div>
     <div class="nav-links">
       <a href="/"><i class="fas fa-home"></i> Home</a>
-      <a href="#" id="logout-btn" style="display:none;color:#f43f5e;" onclick="logoutAdmin();return false;"><i class="fas fa-sign-out-alt"></i> Logout</a>
+      <a href="#" id="logout-btn" style="display:none;color:#f43f5e;" onclick="logoutAdmin();return false;">
+        <i class="fas fa-sign-out-alt"></i> Logout
+      </a>
     </div>
   </nav>
 
   <div class="admin-wrapper">
+    <!-- AUTH -->
     <div class="admin-card glass-panel" id="auth-section">
       <div class="card-header" style="text-align:center;">
         <h2 id="auth-title"><i class="fas fa-user-lock text-gradient"></i> Admin Login</h2>
+        <p id="auth-subtitle">Login to manage meetings</p>
       </div>
       <div id="auth-error" class="error-badge" style="display:none;"></div>
       <form id="auth-form">
-        <div class="input-group-custom"><label>Username</label><input type="text" id="admin-username" required></div>
-        <div class="input-group-custom"><label>Password</label><input type="password" id="admin-password" required></div>
+        <div class="input-group-custom">
+          <label>Username</label>
+          <input type="text" id="admin-username" required>
+        </div>
+        <div class="input-group-custom">
+          <label>Password</label>
+          <input type="password" id="admin-password" required>
+        </div>
         <button type="submit" class="btn-glow" style="width:100%;justify-content:center;" id="auth-submit-btn">Login</button>
       </form>
       <p style="text-align:center;margin-top:20px;font-size:14px;color:#94a3b8;">
-        <span id="auth-toggle-text">Don't have an account?</span> <a href="#" id="auth-toggle-link" style="color:#818cf8;font-weight:bold;">Sign Up</a>
+        <span id="auth-toggle-text">Don't have an account?</span>
+        <a href="#" id="auth-toggle-link" style="color:#818cf8;font-weight:bold;text-decoration:none;">Sign Up</a>
       </p>
     </div>
 
+    <!-- DASHBOARD -->
     <div class="admin-card glass-panel" id="dashboard-section" style="display:none;">
-      <div class="card-header"><h2><i class="fas fa-video text-gradient"></i> Create Restricted Space</h2></div>
+      <div class="card-header">
+        <h2><i class="fas fa-video text-gradient"></i> Create Restricted Space</h2>
+        <p>Only listed mobile numbers can join. Host is the only one who can share screen.</p>
+      </div>
       <form id="create-meeting-form">
-        <div class="input-group-custom"><label>Meeting Title</label><input type="text" id="meeting-title" required></div>
-        <div class="input-group-custom"><label>👑 Host Mobile Number</label><input type="tel" id="host-phone" required></div>
-        <div class="input-group-custom"><label>Allowed Mobile Numbers (one per line)</label><textarea id="allowed-numbers" rows="5" required></textarea></div>
-        <button type="submit" class="btn-glow" style="width:100%;justify-content:center;">Generate Secure Link</button>
+        <div class="input-group-custom">
+          <label>Meeting Title</label>
+          <input type="text" id="meeting-title" placeholder="e.g. Math Class" required>
+        </div>
+        <div class="input-group-custom">
+          <label>👑 Host Mobile Number</label>
+          <input type="tel" id="host-phone" placeholder="e.g. 018XXXXXXXX" required>
+        </div>
+        <div class="input-group-custom">
+          <label>Allowed Mobile Numbers (one per line)</label>
+          <textarea id="allowed-numbers" rows="5" placeholder="018XXXXXXXX&#10;017XXXXXXXX" required></textarea>
+        </div>
+        <button type="submit" class="btn-glow" style="width:100%;justify-content:center;">
+          Generate Secure Link
+        </button>
       </form>
       <div id="result-box" class="result-box" style="display:none;">
+        <h4 style="margin-bottom:10px;">✅ Meeting Created!</h4>
         <p id="host-info" style="font-size:13px;color:#a5b4fc;margin-bottom:10px;"></p>
         <div class="link-copy-box">
           <input type="text" id="generated-url" readonly>
@@ -53,48 +85,103 @@
 
   <script>
     let isLoginMode = true;
-    window.onload = () => { if (localStorage.getItem('isAdminLoggedIn') === 'true') showDashboard(); };
 
-    document.getElementById('auth-toggle-link').onclick = (e) => {
-      e.preventDefault(); isLoginMode = !isLoginMode;
-      document.getElementById('auth-title').innerHTML = isLoginMode ? 'Admin Login' : 'Create Account';
+    window.addEventListener('DOMContentLoaded', () => {
+      if (localStorage.getItem('isAdminLoggedIn') === 'true') showDashboard();
+
+      document.getElementById('auth-toggle-link').addEventListener('click', (e) => {
+        e.preventDefault();
+        toggleAuthMode();
+      });
+
+      document.getElementById('auth-form').addEventListener('submit', handleAuth);
+      document.getElementById('create-meeting-form').addEventListener('submit', handleCreate);
+    });
+
+    function toggleAuthMode() {
+      isLoginMode = !isLoginMode;
+      document.getElementById('auth-title').innerHTML = isLoginMode
+        ? '<i class="fas fa-user-lock text-gradient"></i> Admin Login'
+        : '<i class="fas fa-user-plus text-gradient"></i> Create Account';
+      document.getElementById('auth-subtitle').innerText = isLoginMode ? 'Login to manage meetings' : 'Sign up first';
       document.getElementById('auth-submit-btn').innerText = isLoginMode ? 'Login' : 'Sign Up';
       document.getElementById('auth-toggle-text').innerText = isLoginMode ? "Don't have an account?" : 'Already have an account?';
       document.getElementById('auth-toggle-link').innerText = isLoginMode ? 'Sign Up' : 'Login';
       document.getElementById('auth-error').style.display = 'none';
-    };
+    }
 
-    document.getElementById('auth-form').onsubmit = async (e) => {
+    async function handleAuth(e) {
       e.preventDefault();
-      const u = document.getElementById('admin-username').value.trim();
-      const p = document.getElementById('admin-password').value.trim();
-      const res = await fetch(isLoginMode ? '/api/admin-login' : '/api/admin-signup', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p })
-      });
-      const data = await res.json();
-      if (data.success) {
-        if (isLoginMode) { localStorage.setItem('isAdminLoggedIn', 'true'); showDashboard(); } 
-        else { alert('Account created! Now login.'); document.getElementById('auth-toggle-link').click(); }
-      } else { document.getElementById('auth-error').innerText = data.message; document.getElementById('auth-error').style.display = 'block'; }
-    };
+      const username = document.getElementById('admin-username').value.trim();
+      const password = document.getElementById('admin-password').value.trim();
+      const errorBox = document.getElementById('auth-error');
+      const endpoint = isLoginMode ? '/api/admin-login' : '/api/admin-signup';
 
-    function showDashboard() { document.getElementById('auth-section').style.display = 'none'; document.getElementById('dashboard-section').style.display = 'block'; document.getElementById('logout-btn').style.display = 'inline-block'; }
-    function logoutAdmin() { localStorage.removeItem('isAdminLoggedIn'); location.reload(); }
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
 
-    document.getElementById('create-meeting-form').onsubmit = async (e) => {
+        if (data.success) {
+          if (isLoginMode) {
+            localStorage.setItem('isAdminLoggedIn', 'true');
+            showDashboard();
+          } else {
+            alert('✅ Account created! Now login.');
+            toggleAuthMode();
+          }
+        } else {
+          errorBox.innerText = data.message;
+          errorBox.style.display = 'block';
+        }
+      } catch {
+        errorBox.innerText = 'Server Error!';
+        errorBox.style.display = 'block';
+      }
+    }
+
+    function showDashboard() {
+      document.getElementById('auth-section').style.display = 'none';
+      document.getElementById('dashboard-section').style.display = 'block';
+      document.getElementById('logout-btn').style.display = 'inline-block';
+    }
+
+    function logoutAdmin() {
+      localStorage.removeItem('isAdminLoggedIn');
+      location.reload();
+    }
+
+    async function handleCreate(e) {
       e.preventDefault();
+      const title = document.getElementById('meeting-title').value.trim();
+      const numbers = document.getElementById('allowed-numbers').value.trim();
+      const hostPhone = document.getElementById('host-phone').value.trim();
+
       const res = await fetch('/api/create-meeting', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: document.getElementById('meeting-title').value, numbers: document.getElementById('allowed-numbers').value, hostPhone: document.getElementById('host-phone').value })
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, numbers, hostPhone })
       });
       const data = await res.json();
+
       if (data.success) {
         document.getElementById('result-box').style.display = 'block';
         document.getElementById('generated-url').value = data.meetingUrl;
         document.getElementById('host-info').innerText = `👑 Host: ${data.hostPhone}`;
+      } else {
+        alert(data.message || 'Failed!');
       }
-    };
-    function copyGeneratedLink() { document.getElementById('generated-url').select(); navigator.clipboard.writeText(document.getElementById('generated-url').value); alert('Link copied!'); }
+    }
+
+    function copyGeneratedLink() {
+      const el = document.getElementById('generated-url');
+      el.select();
+      navigator.clipboard.writeText(el.value);
+      alert('Link copied!');
+    }
   </script>
 </body>
 </html>
