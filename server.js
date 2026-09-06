@@ -11,17 +11,18 @@ const path = require('path');
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-const peerServer = ExpressPeerServer(server, {
-  debug: false,
-  allow_discovery: true
-});
+const peerServer = ExpressPeerServer(server, { debug: false, allow_discovery: true });
 app.use('/peerjs', peerServer);
 app.use(express.static('public'));
 
 const meetingsDB = {};
-const activeRoomUsers = {};   // roomId -> { phone: socketId }
-const roomParticipants = {};  // roomId -> [{ socketId, peerId, name, phone, isHost }]
+const activeRoomUsers = {};   // roomId -> { phone: { socketId, peerId } }
+const roomParticipants = {};
 const adminsDB = { admin: '1234' };
+
+function cleanPhone(p) {
+  return String(p || '').replace(/[^0-9]/g, '');
+}
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'admin.html')));
@@ -31,7 +32,7 @@ app.post('/api/admin-signup', (req, res) => {
   if (!username || !password) return res.json({ success: false, message: 'Username/Password লাগবে!' });
   if (adminsDB[username]) return res.json({ success: false, message: 'Username আগে থেকেই আছে!' });
   adminsDB[username] = password;
-  res.json({ success: true, message: 'Signup Successful!' });
+  res.json({ success: true });
 });
 
 app.post('/api/admin-login', (req, res) => {
@@ -42,27 +43,31 @@ app.post('/api/admin-login', (req, res) => {
 
 app.post('/api/create-meeting', (req, res) => {
   const { title, numbers, hostPhone } = req.body;
-  if (!numbers || !numbers.trim()) return res.json({ success: false, message: 'কমপক্ষে ১টা নম্বর লাগবে!' });
+  if (!numbers || !String(numbers).trim()) {
+    return res.json({ success: false, message: 'কমপক্ষে ১টা নম্বর লাগবে!' });
+  }
 
   const roomId = uuidV4();
-  const allowedNumbers = numbers
+  let allowed = String(numbers)
     .split(/[\n,]+/)
-    .map(n => n.trim().replace(/[^0-9]/g, ''))
+    .map(cleanPhone)
     .filter(n => n.length >= 10);
 
-  // unique numbers only
-  const uniqueNumbers = [...new Set(allowedNumbers)];
-  const cleanHost = (hostPhone || '').trim().replace(/[^0-9]/g, '');
+  allowed = [...new Set(allowed)];
+  const host = cleanPhone(hostPhone);
+  if (host && !allowed.includes(host)) allowed.push(host);
 
-  if (cleanHost && !uniqueNumbers.includes(cleanHost)) uniqueNumbers.push(cleanHost);
-  if (uniqueNumbers.length === 0) return res.json({ success: false, message: 'বৈধ নম্বর পাওয়া যায়নি!' });
+  if (!allowed.length) return res.json({ success: false, message: 'বৈধ নম্বর নেই!' });
 
   meetingsDB[roomId] = {
     title: title || 'Private Meeting',
-    allowedNumbers: uniqueNumbers,
-    hostPhone: cleanHost || uniqueNumbers[0],
-    createdAt: new Date()
+    allowedNumbers: allowed,
+    hostPhone: host || allowed[0]
   };
+
+  // reset room trackers
+  activeRoomUsers[roomId] = {};
+  roomParticipants[roomId] = [];
 
   res.json({
     success: true,
@@ -72,137 +77,110 @@ app.post('/api/create-meeting', (req, res) => {
   });
 });
 
-// Verify + check if number already in meeting
+// HARD BLOCK same number before enter
 app.post('/api/verify-user', (req, res) => {
-  const { roomId, phone } = req.body;
-  const cleanPhone = (phone || '').trim().replace(/[^0-9]/g, '');
+  const roomId = req.body.roomId;
+  const phone = cleanPhone(req.body.phone);
   const meeting = meetingsDB[roomId];
 
   if (!meeting) {
-    return res.status(403).json({
-      success: false,
-      message: 'মিটিং পাওয়া যায়নি! Admin কে নতুন লিংক তৈরি করতে বলুন।'
-    });
+    return res.status(403).json({ success: false, message: 'মিটিং নেই! Admin নতুন লিংক বানাও।' });
+  }
+  if (!meeting.allowedNumbers.includes(phone)) {
+    return res.status(403).json({ success: false, message: 'Access Denied! নম্বর অনুমোদিত নয়।' });
   }
 
-  if (!meeting.allowedNumbers.includes(cleanPhone)) {
-    return res.status(403).json({
-      success: false,
-      message: 'Access Denied! আপনার নম্বরটি অনুমোদিত নয়।'
-    });
-  }
-
-  // 🔒 already joined with this number?
-  if (activeRoomUsers[roomId] && activeRoomUsers[roomId][cleanPhone]) {
-    return res.status(403).json({
-      success: false,
-      message: 'এই নম্বর দিয়ে ইতিমধ্যে কেউ মিটিংয়ে আছে! এক নম্বরে একজনই ঢুকতে পারবে।'
-    });
+  // if number already active in this room => BLOCK
+  const active = activeRoomUsers[roomId] && activeRoomUsers[roomId][phone];
+  if (active && active.socketId) {
+    const stillOnline = io.sockets.sockets.get(active.socketId);
+    if (stillOnline) {
+      return res.status(403).json({
+        success: false,
+        message: '⛔ এই নম্বর দিয়ে ইতিমধ্যে কেউ মিটিংয়ে আছে। এক নম্বরে একজনই ঢুকতে পারবে।'
+      });
+    }
+    // stale entry cleanup
+    delete activeRoomUsers[roomId][phone];
   }
 
   res.json({
     success: true,
     title: meeting.title,
-    isHost: meeting.hostPhone === cleanPhone
+    isHost: meeting.hostPhone === phone
   });
 });
 
 app.get('/:room', (req, res) => res.sendFile(path.join(__dirname, 'public', 'room.html')));
 
 io.on('connection', (socket) => {
-  console.log('🟢 Socket connected:', socket.id);
-
   socket.on('join-room', (roomId, userId, userName, userPhone, isHost) => {
-    const cleanPhone = (userPhone || '').trim().replace(/[^0-9]/g, '');
-
-    if (!roomId || !userId || !cleanPhone) {
-      socket.emit('join-rejected', 'Invalid join data');
+    const phone = cleanPhone(userPhone);
+    if (!roomId || !userId || !phone) {
+      socket.emit('join-rejected', 'Invalid data');
       return;
     }
 
     if (!activeRoomUsers[roomId]) activeRoomUsers[roomId] = {};
     if (!roomParticipants[roomId]) roomParticipants[roomId] = [];
 
-    // 🔒 ONE NUMBER = ONE PERSON (socket level)
-    if (activeRoomUsers[roomId][cleanPhone]) {
-      const oldSocketId = activeRoomUsers[roomId][cleanPhone];
-
-      // kick OLD user
-      io.to(oldSocketId).emit('duplicate-kicked',
-        '🚨 আপনার নম্বর দিয়ে অন্য ডিভাইস থেকে ঢোকার চেষ্টা হয়েছে। সিকিউরিটির জন্য আপনাকে বের করা হলো।'
-      );
-
-      // reject NEW user too
-      socket.emit('duplicate-kicked',
-        '🚨 এই নম্বর দিয়ে ইতিমধ্যে সেশন ছিল। এক নম্বরে একজনই থাকতে পারবে। আবার চেষ্টা করুন।'
-      );
-
-      // cleanup old
-      delete activeRoomUsers[roomId][cleanPhone];
-      roomParticipants[roomId] = roomParticipants[roomId].filter(p => p.phone !== cleanPhone);
-      io.to(roomId).emit('participants-update', roomParticipants[roomId]);
-
-      // also remove old from room if still connected
-      const oldSock = io.sockets.sockets.get(oldSocketId);
-      if (oldSock) {
-        oldSock.leave(roomId);
+    // SECOND hard check on socket join
+    const existing = activeRoomUsers[roomId][phone];
+    if (existing && existing.socketId && existing.socketId !== socket.id) {
+      const old = io.sockets.sockets.get(existing.socketId);
+      if (old) {
+        // keep first user, reject second
+        socket.emit('duplicate-kicked', '⛔ এই নম্বর ইতিমধ্যে ব্যবহৃত হচ্ছে। অন্য নম্বর দিন।');
+        return;
       }
-      return;
+      // old gone -> free slot
+      delete activeRoomUsers[roomId][phone];
+      roomParticipants[roomId] = roomParticipants[roomId].filter(p => p.phone !== phone);
     }
 
-    // register
-    activeRoomUsers[roomId][cleanPhone] = socket.id;
+    // register this phone exclusively
+    activeRoomUsers[roomId][phone] = { socketId: socket.id, peerId: userId };
+
     socket.roomId = roomId;
-    socket.userPhone = cleanPhone;
+    socket.userPhone = phone;
     socket.peerId = userId;
-    socket.userName = userName;
+    socket.userName = userName || 'User';
 
-    // existing users BEFORE adding me (for new joiner to call)
-    const existing = roomParticipants[roomId]
+    const existingUsers = roomParticipants[roomId]
       .filter(p => p.peerId && p.peerId !== userId)
-      .map(p => ({
-        peerId: p.peerId,
-        name: p.name,
-        isHost: !!p.isHost
-      }));
+      .map(p => ({ peerId: p.peerId, name: p.name, isHost: !!p.isHost }));
 
+    // avoid duplicate participant rows
+    roomParticipants[roomId] = roomParticipants[roomId].filter(p => p.phone !== phone && p.peerId !== userId);
     roomParticipants[roomId].push({
       socketId: socket.id,
       peerId: userId,
-      name: userName,
-      phone: cleanPhone,
+      name: socket.userName,
+      phone,
       isHost: !!isHost
     });
 
     socket.join(roomId);
 
-    // 1) tell ME who is already here → I will call them
-    socket.emit('existing-users', existing);
-
-    // 2) tell OTHERS that I joined → they will call me
-    socket.to(roomId).emit('user-connected', userId, userName, !!isHost);
-
-    // 3) everyone gets people list
+    socket.emit('existing-users', existingUsers);
+    socket.to(roomId).emit('user-connected', userId, socket.userName, !!isHost);
     io.to(roomId).emit('participants-update', roomParticipants[roomId]);
 
-    console.log(`👤 ${userName} (${cleanPhone}) joined ${roomId} | peers now: ${roomParticipants[roomId].length}`);
-
-    socket.on('message', (message) => {
-      io.to(roomId).emit('createMessage', message, userName);
+    socket.on('message', (msg) => {
+      io.to(roomId).emit('createMessage', msg, socket.userName);
     });
 
     socket.on('screen-share-started', () => {
-      socket.to(roomId).emit('host-screen-sharing', true, userName, userId);
+      socket.to(roomId).emit('host-screen-sharing', true, socket.userName, userId);
     });
-
     socket.on('screen-share-stopped', () => {
-      socket.to(roomId).emit('host-screen-sharing', false, userName, userId);
+      socket.to(roomId).emit('host-screen-sharing', false, socket.userName, userId);
     });
 
     socket.on('disconnect', () => {
       if (socket.roomId && socket.userPhone && activeRoomUsers[socket.roomId]) {
-        // only delete if this socket still owns the phone slot
-        if (activeRoomUsers[socket.roomId][socket.userPhone] === socket.id) {
+        const slot = activeRoomUsers[socket.roomId][socket.userPhone];
+        if (slot && slot.socketId === socket.id) {
           delete activeRoomUsers[socket.roomId][socket.userPhone];
         }
       }
@@ -211,13 +189,12 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('participants-update', roomParticipants[roomId]);
       }
       socket.to(roomId).emit('user-disconnected', userId);
-      console.log(`🔴 ${userName} left ${roomId}`);
     });
   });
 });
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🔑 Default Admin: admin / 1234`);
+  console.log(`🚀 Server on ${PORT}`);
+  console.log('🔑 admin / 1234');
 });
