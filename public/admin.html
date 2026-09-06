@@ -1,1 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pulse Admin</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body class="landing-body">
+  <div class="bg-glow glow-1"></div><div class="bg-glow glow-2"></div>
+  <nav class="glass-nav">
+    <div class="logo"><div class="logo-icon"><i class="fas fa-shield-alt"></i></div><span>Admin<b>Shield</b></span></div>
+    <div class="nav-links">
+      <a href="/"><i class="fas fa-home"></i> Home</a>
+      <a href="#" id="logout-btn" style="display:none;color:#f43f5e;" onclick="logoutAdmin();return false;"><i class="fas fa-sign-out-alt"></i> Logout</a>
+    </div>
+  </nav>
 
+  <div class="admin-wrapper">
+    <div class="admin-card glass-panel" id="auth-section">
+      <div class="card-header" style="text-align:center;">
+        <h2 id="auth-title"><i class="fas fa-user-lock text-gradient"></i> Admin Login</h2>
+      </div>
+      <div id="auth-error" class="error-badge" style="display:none;"></div>
+      <form id="auth-form">
+        <div class="input-group-custom"><label>Username</label><input type="text" id="admin-username" required></div>
+        <div class="input-group-custom"><label>Password</label><input type="password" id="admin-password" required></div>
+        <button type="submit" class="btn-glow" style="width:100%;justify-content:center;" id="auth-submit-btn">Login</button>
+      </form>
+      <p style="text-align:center;margin-top:20px;font-size:14px;color:#94a3b8;">
+        <span id="auth-toggle-text">Don't have an account?</span> <a href="#" id="auth-toggle-link" style="color:#818cf8;font-weight:bold;">Sign Up</a>
+      </p>
+    </div>
+
+    <div class="admin-card glass-panel" id="dashboard-section" style="display:none;">
+      <div class="card-header"><h2><i class="fas fa-video text-gradient"></i> Create Restricted Space</h2></div>
+      <form id="create-meeting-form">
+        <div class="input-group-custom"><label>Meeting Title</label><input type="text" id="meeting-title" required></div>
+        <div class="input-group-custom"><label>👑 Host Mobile Number</label><input type="tel" id="host-phone" required></div>
+        <div class="input-group-custom"><label>Allowed Mobile Numbers (one per line)</label><textarea id="allowed-numbers" rows="5" required></textarea></div>
+        <button type="submit" class="btn-glow" style="width:100%;justify-content:center;">Generate Secure Link</button>
+      </form>
+      <div id="result-box" class="result-box" style="display:none;">
+        <p id="host-info" style="font-size:13px;color:#a5b4fc;margin-bottom:10px;"></p>
+        <div class="link-copy-box">
+          <input type="text" id="generated-url" readonly>
+          <button type="button" onclick="copyGeneratedLink()">Copy</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let isLoginMode = true;
+    window.onload = () => { if (localStorage.getItem('isAdminLoggedIn') === 'true') showDashboard(); };
+
+    document.getElementById('auth-toggle-link').onclick = (e) => {
+      e.preventDefault(); isLoginMode = !isLoginMode;
+      document.getElementById('auth-title').innerHTML = isLoginMode ? 'Admin Login' : 'Create Account';
+      document.getElementById('auth-submit-btn').innerText = isLoginMode ? 'Login' : 'Sign Up';
+      document.getElementById('auth-toggle-text').innerText = isLoginMode ? "Don't have an account?" : 'Already have an account?';
+      document.getElementById('auth-toggle-link').innerText = isLoginMode ? 'Sign Up' : 'Login';
+      document.getElementById('auth-error').style.display = 'none';
+    };
+
+    document.getElementById('auth-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const u = document.getElementById('admin-username').value.trim();
+      const p = document.getElementById('admin-password').value.trim();
+      const res = await fetch(isLoginMode ? '/api/admin-login' : '/api/admin-signup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: u, password: p })
+      });
+      const data = await res.json();
+      if (data.success) {
+        if (isLoginMode) { localStorage.setItem('isAdminLoggedIn', 'true'); showDashboard(); } 
+        else { alert('Account created! Now login.'); document.getElementById('auth-toggle-link').click(); }
+      } else { document.getElementById('auth-error').innerText = data.message; document.getElementById('auth-error').style.display = 'block'; }
+    };
+
+    function showDashboard() { document.getElementById('auth-section').style.display = 'none'; document.getElementById('dashboard-section').style.display = 'block'; document.getElementById('logout-btn').style.display = 'inline-block'; }
+    function logoutAdmin() { localStorage.removeItem('isAdminLoggedIn'); location.reload(); }
+
+    document.getElementById('create-meeting-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const res = await fetch('/api/create-meeting', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: document.getElementById('meeting-title').value, numbers: document.getElementById('allowed-numbers').value, hostPhone: document.getElementById('host-phone').value })
+      });
+      const data = await res.json();
+      if (data.success) {
+        document.getElementById('result-box').style.display = 'block';
+        document.getElementById('generated-url').value = data.meetingUrl;
+        document.getElementById('host-info').innerText = `👑 Host: ${data.hostPhone}`;
+      }
+    };
+    function copyGeneratedLink() { document.getElementById('generated-url').select(); navigator.clipboard.writeText(document.getElementById('generated-url').value); alert('Link copied!'); }
+  </script>
+</body>
+</html>
